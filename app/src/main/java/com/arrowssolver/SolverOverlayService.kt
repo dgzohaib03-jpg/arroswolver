@@ -6,10 +6,14 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -177,7 +181,7 @@ class SolverOverlayService : Service() {
         val height = metrics.heightPixels
         val density = metrics.densityDpi
 
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        imageReader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 2)
         imageReader?.setOnImageAvailableListener({ reader ->
             if (!isCapturing.get()) {
                 captureHandler.post { captureFrame(reader) }
@@ -200,36 +204,21 @@ class SolverOverlayService : Service() {
         if (isCapturing.getAndSet(true)) return
 
         try {
-            val image = reader.acquireLatestImage() ?: run {
+            val img: Image = reader.acquireLatestImage() ?: run {
                 isCapturing.set(false)
                 return
             }
 
-            val planes = image.planes
-            val buffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
-            val pixels = IntArray(image.width * image.height)
-            buffer.rewind()
-            for (row in 0 until image.height) {
-                for (col in 0 until image.width) {
-                    val pos = row * rowStride + col * pixelStride
-                    val r = buffer.get(pos).toInt() and 0xFF
-                    val g = buffer.get(pos + 1).toInt() and 0xFF
-                    val b = buffer.get(pos + 2).toInt() and 0xFF
-                    val a = buffer.get(pos + 3).toInt() and 0xFF
-                    pixels[row * image.width + col] = (a shl 24) or (r shl 16) or (g shl 8) or b
-                }
+            val buf = img.getPlanes()[0].buffer
+            val bytes = ByteArray(buf.remaining())
+            buf.get(bytes)
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+
+            img.close()
+
+            if (bmp != null) {
+                analyzeBoard(bmp)
             }
-            val bitmap = android.graphics.Bitmap.createBitmap(
-                image.width, image.height,
-                android.graphics.Bitmap.Config.ARGB_8888
-            )
-            bitmap.setPixels(pixels, 0, image.width, 0, 0, image.width, image.height)
-
-            image.close()
-
-            analyzeBoard(bitmap)
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
