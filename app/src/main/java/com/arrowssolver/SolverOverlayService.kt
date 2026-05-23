@@ -4,11 +4,8 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
@@ -22,6 +19,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.*
 import android.widget.Toast
 import com.arrowssolver.overlay.OverlayView
@@ -31,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class SolverOverlayService : Service() {
 
     companion object {
+        private const val TAG = "SolverOverlay"
         const val CHANNEL_ID = "solver_overlay_channel"
         const val NOTIFICATION_ID = 1001
         const val ACTION_START = "com.arrowssolver.ACTION_START"
@@ -38,7 +37,7 @@ class SolverOverlayService : Service() {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_DATA = "data"
 
-        var isRunning = AtomicBoolean(false)
+        val isRunning = AtomicBoolean(false)
     }
 
     private lateinit var windowManager: WindowManager
@@ -48,20 +47,19 @@ class SolverOverlayService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var captureWidth: Int = 0
+    private var captureHeight: Int = 0
 
     private var resultCode: Int = 0
     private var data: Intent? = null
 
-    private var detectedBoard: BoardDetectionResult? = null
-    private var currentSolution: Solution? = null
-
     private val handler = Handler(Looper.getMainLooper())
     private val captureHandler = Handler(Looper.getMainLooper())
+    private val isCapturing = AtomicBoolean(false)
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        createOverlay()
         createNotificationChannel()
     }
 
@@ -69,11 +67,18 @@ class SolverOverlayService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-                data = intent.getParcelableExtra(EXTRA_DATA)
+                data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(EXTRA_DATA)
+                }
 
                 startForeground(NOTIFICATION_ID, createNotification())
-                showOverlay()
                 isRunning.set(true)
+
+                createOverlay()
+                showOverlay()
 
                 if (resultCode != 0 && data != null) {
                     setupMediaProjection()
@@ -88,8 +93,8 @@ class SolverOverlayService : Service() {
 
     override fun onDestroy() {
         isRunning.set(false)
-        hideOverlay()
         releaseMediaProjection()
+        hideOverlay()
         super.onDestroy()
     }
 
@@ -97,8 +102,7 @@ class SolverOverlayService : Service() {
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Arrows Solver Overlay",
+            CHANNEL_ID, "Arrows Solver Overlay",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
             description = "Shows solver overlay over Arrows GO!"
@@ -113,21 +117,18 @@ class SolverOverlayService : Service() {
             .setContentText("Overlay is active")
             .setSmallIcon(android.R.drawable.ic_menu_edit)
             .setOngoing(true)
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             builder.setForegroundServiceBehavior(
                 Notification.FOREGROUND_SERVICE_IMMEDIATE
             )
         }
-
         return builder.build()
     }
 
     private fun createOverlay() {
+        if (::overlayView.isInitialized) return
         overlayView = OverlayView(this)
-        overlayView.setOnBoardTap { x, y ->
-            handleTap(x, y)
-        }
+        overlayView.setOnBoardTap { x, y -> handleTap(x, y) }
 
         overlayParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -149,176 +150,231 @@ class SolverOverlayService : Service() {
 
     private fun showOverlay() {
         try {
+            if (!::overlayView.isInitialized) return
             overlayParams?.let { params ->
+                if (overlayView.isAttachedToWindow) return
                 windowManager.addView(overlayView, params)
                 overlayView.visibility = View.VISIBLE
             }
         } catch (e: Exception) {
-            Toast.makeText(this, "Failed to show overlay: ${e.message}", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "Failed to show overlay", e)
         }
     }
 
     private fun hideOverlay() {
         try {
+            if (!::overlayView.isInitialized) return
+            if (!overlayView.isAttachedToWindow) return
             overlayView.visibility = View.GONE
             windowManager.removeView(overlayView)
         } catch (e: Exception) {
-            // view may not be attached
+            Log.e(TAG, "Failed to hide overlay", e)
         }
     }
 
     private fun setupMediaProjection() {
-        val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = mpm.getMediaProjection(resultCode, data!!)
-        startCapture()
+        try {
+            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = mpm.getMediaProjection(resultCode, data!!)
+            startCapture()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to setup MediaProjection", e)
+        }
     }
 
     private fun startCapture() {
-        val metrics = DisplayMetrics()
-        windowManager.defaultDisplay.getRealMetrics(metrics)
+        try {
+            val metrics = DisplayMetrics()
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            captureWidth = metrics.widthPixels
+            captureHeight = metrics.heightPixels
 
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
+            imageReader = ImageReader.newInstance(
+                captureWidth, captureHeight,
+                PixelFormat.RGBA_8888, 2
+            )
+            imageReader?.setOnImageAvailableListener({ reader ->
+                if (!isCapturing.get()) {
+                    captureHandler.post { captureFrame(reader) }
+                }
+            }, captureHandler)
 
-        imageReader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 2)
-        imageReader?.setOnImageAvailableListener({ reader ->
-            if (!isCapturing.get()) {
-                captureHandler.post { captureFrame(reader) }
-            }
-        }, captureHandler)
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "SolverCapture",
+                captureWidth, captureHeight, metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader?.surface, null, null
+            )
 
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "SolverCapture",
-            width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
-            null,
-            null
-        )
+            Log.d(TAG, "Capture started: ${captureWidth}x${captureHeight}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start capture", e)
+        }
     }
-
-    private val isCapturing = AtomicBoolean(false)
 
     private fun captureFrame(reader: ImageReader) {
         if (isCapturing.getAndSet(true)) return
 
+        var image: Image? = null
         try {
-            val img: Image = reader.acquireLatestImage() ?: run {
+            image = reader.acquireLatestImage() ?: run {
                 isCapturing.set(false)
                 return
             }
 
-            val buf = img.getPlanes()[0].buffer
-            val bytes = ByteArray(buf.remaining())
-            buf.get(bytes)
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            val bitmap = imageToBitmap(image)
+            image.close()
+            image = null
 
-            img.close()
-
-            if (bmp != null) {
-                analyzeBoard(bmp)
+            if (bitmap != null) {
+                analyzeBoard(bitmap)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Capture frame error", e)
         } finally {
+            image?.close()
             isCapturing.set(false)
         }
     }
 
-    private fun analyzeBoard(bitmap: android.graphics.Bitmap) {
-        val result = ArrowDetector.detectBoard(bitmap)
-        if (result != null && result.arrows.isNotEmpty()) {
-            detectedBoard = result
-            val board = BoardState(result.gridRows, result.gridCols, result.arrows)
-            val solution = EscapeSolver.solve(board)
-            currentSolution = solution
+    private fun imageToBitmap(image: Image): Bitmap? {
+        val planes = image.planes
+        if (planes.isEmpty()) return null
 
-            updateOverlay(result, solution)
-            sendBoardInfo(result, solution)
+        val plane = planes[0]
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        val width = image.width
+        val height = image.height
+
+        val pixelCount = width * height
+        val pixels = IntArray(pixelCount)
+
+        val rowBytes = ByteArray(rowStride)
+        for (row in 0 until height) {
+            buffer.position(row * rowStride)
+            buffer.get(rowBytes, 0, rowStride)
+            for (col in 0 until width) {
+                val offset = col * pixelStride
+                val r = rowBytes[offset].toInt() and 0xFF
+                val g = rowBytes[offset + 1].toInt() and 0xFF
+                val b = rowBytes[offset + 2].toInt() and 0xFF
+                val a = rowBytes[offset + 3].toInt() and 0xFF
+                pixels[row * width + col] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(pixels, 0, width, 0, 0, width, height)
+        return bmp
+    }
+
+    private fun analyzeBoard(bitmap: Bitmap) {
+        try {
+            val result = ArrowDetector.detectBoard(bitmap)
+            if (result != null && result.arrows.isNotEmpty()) {
+                val board = BoardState(result.gridRows, result.gridCols, result.arrows)
+                val solution = EscapeSolver.solve(board)
+                updateOverlay(result, solution)
+                sendBoardInfo(result, solution)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Board analysis error", e)
         }
     }
 
     private fun updateOverlay(result: BoardDetectionResult, solution: Solution) {
         handler.post {
-            val safeArrows = if (solution.steps.isNotEmpty()) {
-                val firstStep = solution.steps.first().safeArrows
-                firstStep.map { it.row * result.gridCols + it.col }
-            } else emptyList()
+            try {
+                if (!::overlayView.isInitialized) return@post
 
-            val cellToSeq = mutableMapOf<Int, Int>()
-            var seqNum = 1
-            for (step in solution.steps) {
-                for (arrow in step.safeArrows) {
-                    val idx = arrow.row * result.gridCols + arrow.col
-                    cellToSeq[idx] = seqNum++
+                val safeList = if (solution.steps.isNotEmpty()) {
+                    solution.steps.first().safeArrows
+                        .map { it.row * result.gridCols + it.col }
+                } else emptyList()
+
+                val seqMap = mutableMapOf<Int, Int>()
+                var num = 1
+                for (step in solution.steps) {
+                    for (arrow in step.safeArrows) {
+                        seqMap[arrow.row * result.gridCols + arrow.col] = num++
+                    }
                 }
-            }
 
-            val boardRect = result.boardBounds
-            val displayRect = if (boardRect != null) {
-                val metrics = DisplayMetrics()
-                windowManager.defaultDisplay.getRealMetrics(metrics)
-                Rect(
-                    boardRect.left,
-                    boardRect.top,
-                    boardRect.right.coerceAtMost(metrics.widthPixels),
-                    boardRect.bottom.coerceAtMost(metrics.heightPixels)
-                )
-            } else {
-                null
-            }
+                val displayRect = result.boardBounds?.let { bounds ->
+                    val m = DisplayMetrics()
+                    windowManager.defaultDisplay.getRealMetrics(m)
+                    Rect(
+                        bounds.left.coerceAtLeast(0),
+                        bounds.top.coerceAtLeast(0),
+                        bounds.right.coerceAtMost(m.widthPixels),
+                        bounds.bottom.coerceAtMost(m.heightPixels)
+                    )
+                }
 
-            overlayView.apply {
-                this.boardRect = displayRect
-                this.gridRows = result.gridRows
-                this.gridCols = result.gridCols
-                this.safeArrows = safeArrows
-                this.allArrows = result.arrows
-                this.arrowSequence = cellToSeq
-                invalidate()
+                with(overlayView) {
+                    this.boardRect = displayRect
+                    this.gridRows = result.gridRows
+                    this.gridCols = result.gridCols
+                    this.safeArrows = safeList
+                    this.allArrows = result.arrows
+                    this.arrowSequence = seqMap
+                    invalidate()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Overlay update error", e)
             }
         }
     }
 
     private fun sendBoardInfo(result: BoardDetectionResult, solution: Solution) {
-        val intent = Intent("com.arrowssolver.BOARD_UPDATE")
-        intent.putExtra("rows", result.gridRows)
-        intent.putExtra("cols", result.gridCols)
-        intent.putExtra("arrows", result.arrows.size)
-        intent.putExtra("safe", solution.steps.firstOrNull()?.safeArrows?.size ?: 0)
-        intent.putExtra("complete", solution.isComplete)
-        sendBroadcast(intent)
+        try {
+            val i = Intent("com.arrowssolver.BOARD_UPDATE").apply {
+                putExtra("rows", result.gridRows)
+                putExtra("cols", result.gridCols)
+                putExtra("arrows", result.arrows.size)
+                putExtra("safe", solution.steps.firstOrNull()?.safeArrows?.size ?: 0)
+                putExtra("complete", solution.isComplete)
+            }
+            sendBroadcast(i)
+        } catch (e: Exception) {
+            Log.e(TAG, "sendBoardInfo error", e)
+        }
     }
 
     private fun handleTap(x: Float, y: Float) {
-        val rect = overlayView.boardRect ?: return
-        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return
+        try {
+            if (!::overlayView.isInitialized) return
+            val rect = overlayView.boardRect ?: return
+            if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return
 
-        val col = ((x - rect.left) / rect.width() * overlayView.gridCols).toInt()
-        val row = ((y - rect.top) / rect.height() * overlayView.gridRows).toInt()
-
-        if (row in 0 until overlayView.gridRows && col in 0 until overlayView.gridCols) {
-            Toast.makeText(
-                this,
-                "Tapped cell: ($row, $col)",
-                Toast.LENGTH_SHORT
-            ).show()
+            val col = ((x - rect.left) / rect.width() * overlayView.gridCols).toInt()
+            val row = ((y - rect.top) / rect.height() * overlayView.gridRows).toInt()
+            Toast.makeText(this, "Cell: ($row, $col)", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Tap error", e)
         }
     }
 
     fun requestCapture() {
         if (!isCapturing.getAndSet(true)) {
-            imageReader?.let { reader ->
-                captureFrame(reader)
+            try {
+                imageReader?.let { captureFrame(it) }
+            } catch (e: Exception) {
+                isCapturing.set(false)
             }
         }
     }
 
     private fun releaseMediaProjection() {
-        virtualDisplay?.release()
-        imageReader?.close()
-        mediaProjection?.stop()
+        try {
+            virtualDisplay?.release()
+            imageReader?.close()
+            mediaProjection?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "release error", e)
+        }
         virtualDisplay = null
         imageReader = null
         mediaProjection = null
