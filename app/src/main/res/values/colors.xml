@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="safe_green">#4CAF50</color>
+    <color name="overlay_bg">#33000000</color>
+    <color name="grid_line">#BDBDBD</color>
+    <color name="arrow_color">#FF5722</color>
+    <color name="safe_highlight">#804CAF50</color>
+    <color name="blocked_red">#80F44336</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="primary">#6200EE</color>
+    <color name="primary_dark">#3700B3</color>
+</resources>
