@@ -118,7 +118,10 @@ object ArrowDetector {
         val bRight = ((bounds.right + 1) * sampleRate).coerceAtMost(width)
         val bBottom = ((bounds.bottom + 1) * sampleRate).coerceAtMost(height)
 
-        val boardBitmap = Bitmap.createBitmap(bitmap, bLeft, bTop, bRight - bLeft, bBottom - bTop)
+        val bw = bRight - bLeft
+        val bh = bBottom - bTop
+        if (bw <= 0 || bh <= 0) return null
+        val boardBitmap = Bitmap.createBitmap(bitmap, bLeft, bTop, bw, bh)
         return detectGridFromBoard(boardBitmap, bLeft, bTop)
     }
 

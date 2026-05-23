@@ -79,6 +79,7 @@ class OverlayView(context: Context) : View(context) {
 
         canvas.drawColor(Color.argb(60, 0, 0, 0))
 
+        if (gridCols <= 0 || gridRows <= 0) return
         cellWidth = rect.width().toFloat() / gridCols
         cellHeight = rect.height().toFloat() / gridRows
         offsetX = rect.left.toFloat()
