@@ -109,7 +109,7 @@ object ArrowDetector {
         val regions = findConnectedRegions(occupied)
         if (regions.isEmpty()) return null
 
-        val mainRegion = regions.maxByOrNull { it.size } ?: return null
+        val mainRegion = regions.maxByOrNull { it.pixels.size } ?: return null
         val bounds = mainRegion.bounds
 
         val pad = 4

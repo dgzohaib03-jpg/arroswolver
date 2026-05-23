@@ -6,7 +6,7 @@
     <string name="solve">Solve</string>
     <string name="safe_arrows">Safe Arrows</string>
     <string name="no_safe_arrows">No safe arrows found!</string>
-    <string name="board_detected">Board detected: %dx%d</string>
+    <string name="board_detected" formatted="false">Board detected: %dx%d</string>
     <string name="permission_draw_overlay">Please grant overlay permission</string>
     <string name="permission_notification">Please grant notification permission</string>
 </resources>

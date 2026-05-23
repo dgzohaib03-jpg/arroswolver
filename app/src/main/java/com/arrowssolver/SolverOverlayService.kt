@@ -205,6 +205,7 @@ class SolverOverlayService : Service() {
                 return
             }
 
+            val planes = image.planes
             val buffer = planes[0].buffer
             val pixelStride = planes[0].pixelStride
             val rowStride = planes[0].rowStride
@@ -228,7 +229,7 @@ class SolverOverlayService : Service() {
 
             image.close()
 
-            analyzeBoard(croppedBitmap)
+            analyzeBoard(bitmap)
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
@@ -280,12 +281,12 @@ class SolverOverlayService : Service() {
             }
 
             overlayView.apply {
-                boardRect = displayRect
-                gridRows = result.gridRows
-                gridCols = result.gridCols
-                safeArrows = safeArrows
-                allArrows = result.arrows
-                arrowSequence = cellToSeq
+                this.boardRect = displayRect
+                this.gridRows = result.gridRows
+                this.gridCols = result.gridCols
+                this.safeArrows = safeArrows
+                this.allArrows = result.arrows
+                this.arrowSequence = cellToSeq
                 invalidate()
             }
         }
